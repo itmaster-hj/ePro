@@ -1,0 +1,904 @@
+///////////////////////////////////////////////////////////////
+// ePRO Platform
+// Prisma Schema v0.1
+//
+// Stack:
+// - PostgreSQL
+// - Prisma v6
+// - Next.js App Router
+// - Docker
+// - AWS EC2
+// - Formbricks
+//
+// Features:
+// - Multi Schema
+// - RBAC
+// - Audit Log
+// - Soft Delete
+// - Patient PII Isolation
+// - Future EMR Integration
+//
+///////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////
+// Generator
+///////////////////////////////////////////////////////////////
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+///////////////////////////////////////////////////////////////
+// Datasource
+///////////////////////////////////////////////////////////////
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+
+  schemas = [
+    "medical_auth",
+    "medical_private",
+    "medical_research"
+  ]
+}
+
+///////////////////////////////////////////////////////////////
+// ENUMS
+///////////////////////////////////////////////////////////////
+
+enum OrganizationType {
+  hospital
+  university
+  pharma
+
+  @@schema("medical_auth")
+}
+
+enum ProjectStatus {
+  draft
+  active
+  closed
+
+  @@schema("medical_research")
+}
+
+enum DeliveryType {
+  email
+  sms
+  line
+
+  @@schema("medical_research")
+}
+
+enum SurveyDeliveryStatus {
+  scheduled
+  sent
+  opened
+  completed
+  failed
+  cancelled
+
+  @@schema("medical_research")
+}
+
+enum NotificationStatus {
+  queued
+  sent
+  opened
+  failed
+
+  @@schema("medical_research")
+}
+
+enum RewardStatus {
+  pending
+  granted
+  failed
+
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// medical_auth
+///////////////////////////////////////////////////////////////
+
+model Organization {
+  /// Organization UUID
+  id String @id @default(uuid()) @db.Uuid
+
+  /// hospital / university / pharma
+  organizationType OrganizationType
+
+  /// Organization Name
+  name String @db.VarChar(255)
+
+  /// Active Flag
+  active Boolean @default(true)
+
+  /// Timestamp
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  users User[]
+
+  projects ResearchProject[]
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("organizations")
+  @@schema("medical_auth")
+}
+
+///////////////////////////////////////////////////////////////
+// System User
+///////////////////////////////////////////////////////////////
+
+model User {
+  /// User UUID
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Organization FK
+  organizationId String @db.Uuid
+
+  /// Login Email
+  email String @unique @db.VarChar(255)
+
+  /// Password Hash (bcrypt/argon2)
+  passwordHash String @db.Text
+
+  /// MFA Enabled
+  mfaEnabled Boolean @default(false)
+
+  /// Active Flag
+  active Boolean @default(true)
+
+  /// Soft Delete
+  deletedAt DateTime?
+
+  /// Timestamp
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  organization Organization
+    @relation(fields: [organizationId], references: [id])
+
+  userRoles UserRole[]
+
+  auditLogs AuditLog[]
+
+  createdProjects ResearchProject[]
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([organizationId])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("users")
+  @@schema("medical_auth")
+}
+
+///////////////////////////////////////////////////////////////
+// RBAC Role
+///////////////////////////////////////////////////////////////
+
+model Role {
+  /// Role UUID
+  id String @id @default(uuid()) @db.Uuid
+
+  /// super_admin / crc / investigator etc
+  roleName String @unique @db.VarChar(100)
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  userRoles UserRole[]
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("roles")
+  @@schema("medical_auth")
+}
+
+///////////////////////////////////////////////////////////////
+// User Role Mapping
+///////////////////////////////////////////////////////////////
+
+model UserRole {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+
+  roleId String @db.Uuid
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  user User
+    @relation(fields: [userId], references: [id])
+
+  role Role
+    @relation(fields: [roleId], references: [id])
+
+  /////////////////////////////////////////////////////////////
+  // Constraints
+  /////////////////////////////////////////////////////////////
+
+  @@unique([userId, roleId])
+
+  @@index([userId])
+  @@index([roleId])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("user_roles")
+  @@schema("medical_auth")
+}
+
+///////////////////////////////////////////////////////////////
+// Audit Log
+///////////////////////////////////////////////////////////////
+
+model AuditLog {
+  /// Audit UUID
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Executed User
+  userId String? @db.Uuid
+
+  /// Action Name
+  action String @db.VarChar(100)
+
+  /// Table / Model Name
+  targetType String? @db.VarChar(100)
+
+  /// Target UUID
+  targetId String? @db.Uuid
+
+  /// IP Address
+  ipAddress String? @db.VarChar(100)
+
+  /// Browser UA
+  userAgent String? @db.Text
+
+  /// Additional Metadata JSON
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  user User?
+    @relation(fields: [userId], references: [id])
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("audit_logs")
+  @@schema("medical_auth")
+}
+
+///////////////////////////////////////////////////////////////
+// medical_private
+//
+// PII 영역
+///////////////////////////////////////////////////////////////
+
+model Patient {
+  /// Internal UUID
+  id String @id @default(uuid()) @db.Uuid
+
+  /// System Shared UUID
+  patientUuid String @unique @db.Uuid
+
+  /// Hospital Organization ID
+  facilityId String @db.Uuid
+
+  /// EMR Patient ID
+  emrPatientId String? @db.VarChar(255)
+
+  /////////////////////////////////////////////////////////////
+  // PII
+  // Encryption Recommended
+  /////////////////////////////////////////////////////////////
+
+  fullName String? @db.Text
+
+  birthDate DateTime? @db.Date
+
+  gender String? @db.VarChar(20)
+
+  /////////////////////////////////////////////////////////////
+  // Soft Delete
+  /////////////////////////////////////////////////////////////
+
+  deletedAt DateTime?
+
+  /////////////////////////////////////////////////////////////
+  // Timestamp
+  /////////////////////////////////////////////////////////////
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  contacts PatientContact[]
+
+  magicLinks PatientMagicLink[]
+
+  consents PatientConsent[]
+
+  projectPatients ProjectPatient[]
+
+  surveyDeliveries SurveyDelivery[]
+
+  notifications Notification[]
+
+  rewardLogs RewardLog[]
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  @@index([facilityId])
+
+  @@index([emrPatientId])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("patients")
+  @@schema("medical_private")
+}
+
+///////////////////////////////////////////////////////////////
+// Patient Contact
+///////////////////////////////////////////////////////////////
+
+model PatientContact {
+  id String @id @default(uuid()) @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  /// Encrypted Email
+  email String? @db.Text
+
+  /// Encrypted Phone
+  phoneNumber String? @db.Text
+
+  /// Email Verified Timestamp
+  emailVerifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("patient_contacts")
+  @@schema("medical_private")
+}
+
+///////////////////////////////////////////////////////////////
+// Patient Magic Link
+///////////////////////////////////////////////////////////////
+
+model PatientMagicLink {
+  id String @id @default(uuid()) @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  /// SHA256 HASH
+  tokenHash String @db.Text
+
+  /// Expiration
+  expiresAt DateTime
+
+  /// One Time Use Timestamp
+  usedAt DateTime?
+
+  ipAddress String? @db.VarChar(100)
+
+  userAgent String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  @@index([expiresAt])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("patient_magic_links")
+  @@schema("medical_private")
+}
+
+///////////////////////////////////////////////////////////////
+// Electronic Consent
+///////////////////////////////////////////////////////////////
+
+model PatientConsent {
+  id String @id @default(uuid()) @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  /// Consent Document Version
+  consentVersion String @db.VarChar(50)
+
+  /// Agreement Timestamp
+  agreedAt DateTime?
+
+  /// Revocation Timestamp
+  revokedAt DateTime?
+
+  ipAddress String? @db.VarChar(100)
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("patient_consents")
+  @@schema("medical_private")
+}
+
+///////////////////////////////////////////////////////////////
+// medical_research
+///////////////////////////////////////////////////////////////
+
+model ResearchProject {
+  /// Project UUID
+  id String @id @default(uuid()) @db.Uuid
+
+  organizationId String @db.Uuid
+
+  /// Project Code
+  projectCode String @unique @db.VarChar(100)
+
+  /// Project Name
+  projectName String @db.VarChar(255)
+
+  /// Description
+  description String? @db.Text
+
+  /// draft / active / closed
+  status ProjectStatus @default(draft)
+
+  /// Project Creator
+  createdBy String? @db.Uuid
+
+  /// Start Date
+  startDate DateTime? @db.Date
+
+  /// End Date
+  endDate DateTime? @db.Date
+
+  /// Published Timestamp
+  publishedAt DateTime?
+
+  /// Closed Timestamp
+  closedAt DateTime?
+
+  /// Soft Delete
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  organization Organization
+    @relation(fields: [organizationId], references: [id])
+
+  creator User?
+    @relation(fields: [createdBy], references: [id])
+
+  projectPatients ProjectPatient[]
+
+  surveys Survey[]
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([organizationId])
+
+  @@index([status])
+
+  @@index([projectCode])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("research_projects")
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// Project Enrollment
+///////////////////////////////////////////////////////////////
+
+model ProjectPatient {
+  id String @id @default(uuid()) @db.Uuid
+
+  projectId String @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  /// Enrollment Timestamp
+  enrolledAt DateTime?
+
+  /// Withdrawal Timestamp
+  withdrawnAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  project ResearchProject
+    @relation(fields: [projectId], references: [id])
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Constraints
+  /////////////////////////////////////////////////////////////
+
+  @@unique([projectId, patientUuid])
+
+  @@index([projectId])
+
+  @@index([patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("project_patients")
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// Survey Master
+///////////////////////////////////////////////////////////////
+
+model Survey {
+  id String @id @default(uuid()) @db.Uuid
+
+  projectId String @db.Uuid
+
+  /// Formbricks Survey ID
+  formbricksSurveyId String @db.VarChar(255)
+
+  /// Internal Survey Code
+  surveyCode String? @db.VarChar(100)
+
+  /// Survey Name
+  surveyName String @db.VarChar(255)
+
+  /// Active Flag
+  active Boolean @default(true)
+
+  /// Soft Delete
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  project ResearchProject
+    @relation(fields: [projectId], references: [id])
+
+  deliveries SurveyDelivery[]
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([projectId])
+
+  @@index([formbricksSurveyId])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("surveys")
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// Survey Delivery
+///////////////////////////////////////////////////////////////
+
+model SurveyDelivery {
+  id String @id @default(uuid()) @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  surveyId String @db.Uuid
+
+  deliveryType DeliveryType
+
+  /// Scheduled Timestamp
+  scheduledAt DateTime?
+
+  /// Sent Timestamp
+  sentAt DateTime?
+
+  /// Open Timestamp
+  openedAt DateTime?
+
+  /// Completion Timestamp
+  completedAt DateTime?
+
+  /// Delivery Status
+  status SurveyDeliveryStatus
+
+  /// Reminder Count
+  reminderCount Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  survey Survey
+    @relation(fields: [surveyId], references: [id])
+
+  response SurveyResponse?
+
+  rewards RewardLog[]
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  @@index([surveyId])
+
+  @@index([status])
+
+  @@index([scheduledAt])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("survey_deliveries")
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// Survey Response
+///////////////////////////////////////////////////////////////
+
+model SurveyResponse {
+  id String @id @default(uuid()) @db.Uuid
+
+  surveyDeliveryId String @unique @db.Uuid
+
+  /// Formbricks Response ID
+  formbricksResponseId String @db.VarChar(255)
+
+  /// Raw Response JSON
+  responseJson Json?
+
+  respondedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  surveyDelivery SurveyDelivery
+    @relation(fields: [surveyDeliveryId], references: [id])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("survey_responses")
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// Notification Log
+///////////////////////////////////////////////////////////////
+
+model Notification {
+  id String @id @default(uuid()) @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  /// email / sms / line
+  type String @db.VarChar(50)
+
+  /// Title
+  subject String @db.VarChar(255)
+
+  /// Message Body
+  body String? @db.Text
+
+  sentAt DateTime?
+
+  openedAt DateTime?
+
+  status NotificationStatus
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  @@index([status])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("notifications")
+  @@schema("medical_research")
+}
+
+///////////////////////////////////////////////////////////////
+// Reward Log
+///////////////////////////////////////////////////////////////
+
+model RewardLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  patientUuid String @db.Uuid
+
+  surveyDeliveryId String @db.Uuid
+
+  /// Amazon Gift / Point etc
+  rewardType String @db.VarChar(50)
+
+  /// Reward Amount
+  rewardAmount Int
+
+  /// Sent Timestamp
+  sentAt DateTime?
+
+  /// Status
+  status RewardStatus
+
+  createdAt DateTime @default(now())
+
+  /////////////////////////////////////////////////////////////
+  // Relations
+  /////////////////////////////////////////////////////////////
+
+  patient Patient
+    @relation(fields: [patientUuid], references: [patientUuid])
+
+  surveyDelivery SurveyDelivery
+    @relation(fields: [surveyDeliveryId], references: [id])
+
+  /////////////////////////////////////////////////////////////
+  // Index
+  /////////////////////////////////////////////////////////////
+
+  @@index([patientUuid])
+
+  @@index([surveyDeliveryId])
+
+  @@index([status])
+
+  /////////////////////////////////////////////////////////////
+  // Mapping
+  /////////////////////////////////////////////////////////////
+
+  @@map("reward_logs")
+  @@schema("medical_research")
+}
